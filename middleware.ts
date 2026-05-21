@@ -2,6 +2,8 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 const PUBLIC_PATHS = ["/login", "/signup", "/forgot-password", "/reset-password"];
+// API routes handle their own auth (CRON_SECRET, Supabase RLS)
+const PUBLIC_PREFIXES = ["/api/"];
 
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
@@ -31,7 +33,9 @@ export async function middleware(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser();
 
   const { pathname } = request.nextUrl;
-  const isPublicPath = PUBLIC_PATHS.some((p) => pathname.startsWith(p));
+  const isPublicPath =
+    PUBLIC_PATHS.some((p) => pathname.startsWith(p)) ||
+    PUBLIC_PREFIXES.some((p) => pathname.startsWith(p));
 
   // Niet ingelogd en probeert beveiligde pagina te bezoeken → naar login
   if (!user && !isPublicPath) {
