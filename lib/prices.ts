@@ -216,8 +216,10 @@ export async function fetchPriceRange(
   const now = new Date();
   const daysBack = Math.ceil((now.getTime() - from.getTime()) / 86_400_000) + 1;
 
+  // Note: interval=daily is a paid-only param. For >90 days CoinGecko
+  // automatically returns daily granularity, so we omit it.
   const data = (await cgFetch(
-    `/coins/${coinId}/market_chart?vs_currency=usd&days=${daysBack}&interval=daily`
+    `/coins/${coinId}/market_chart?vs_currency=usd&days=${daysBack}`
   )) as { prices: [number, number][] };
 
   const fromStr = toUTCDateString(from);
