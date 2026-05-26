@@ -194,13 +194,16 @@ export async function fetchYesterdayClose(
 }
 
 /**
- * Fetch daily close prices for a date range via CoinGecko market_chart/range.
+ * Fetch daily close prices for a date range via CoinGecko market_chart.
  *
- * Strategy: the range endpoint returns:
- *   - Hourly data for ranges ≤ 90 days
- *   - Daily data (midnight UTC) for ranges > 90 days
- * We group all returned points by UTC date and take the last timestamp
- * per day as the close price. This works for both granularities.
+ * NOTE: /market_chart/range requires a paid CoinGecko plan. Instead we use
+ * /market_chart?days=X which is available on the demo (free) tier.
+ * For ranges > 90 days CoinGecko automatically returns daily granularity.
+ * For ranges ≤ 90 days it returns hourly data — we group by UTC date and take
+ * the last price per day as the close price.
+ *
+ * Limitation: the `days` parameter counts back from TODAY, so we fetch the
+ * full range and then filter to the requested [from, to] window.
  *
  * Returns a map of YYYY-MM-DD → price in USD.
  */
@@ -210,17 +213,21 @@ export async function fetchPriceRange(
   to: Date
 ): Promise<Map<string, number>> {
   const coinId = COIN_IDS[asset];
-  const fromUnix = Math.floor(from.getTime() / 1000);
-  const toUnix = Math.floor(to.getTime() / 1000);
+  const now = new Date();
+  const daysBack = Math.ceil((now.getTime() - from.getTime()) / 86_400_000) + 1;
 
   const data = (await cgFetch(
-    `/coins/${coinId}/market_chart/range?vs_currency=usd&from=${fromUnix}&to=${toUnix}`
+    `/coins/${coinId}/market_chart?vs_currency=usd&days=${daysBack}&interval=daily`
   )) as { prices: [number, number][] };
 
-  // Group by UTC date, taking the latest timestamp per day
+  const fromStr = toUTCDateString(from);
+  const toStr   = toUTCDateString(to);
+
+  // Group by UTC date, take the latest timestamp per day, filter to requested range
   const byDate = new Map<string, { ts: number; price: number }>();
   for (const [ts, price] of data.prices) {
     const dateStr = toUTCDateString(new Date(ts));
+    if (dateStr < fromStr || dateStr > toStr) continue;
     const existing = byDate.get(dateStr);
     if (!existing || ts > existing.ts) {
       byDate.set(dateStr, { ts, price });
