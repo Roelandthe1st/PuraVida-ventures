@@ -207,25 +207,24 @@ export async function fetchYesterdayClose(
  *
  * Returns a map of YYYY-MM-DD → price in USD.
  */
-export async function fetchPriceRange(
-  asset: Asset,
-  from: Date,
-  to: Date
-): Promise<Map<string, number>> {
-  const coinId = COIN_IDS[asset];
-  const now = new Date();
-  const daysBack = Math.ceil((now.getTime() - from.getTime()) / 86_400_000) + 1;
+// CoinGecko demo tier max days per request
+const CG_MAX_DAYS = 365;
 
-  // Note: interval=daily is a paid-only param. For >90 days CoinGecko
-  // automatically returns daily granularity, so we omit it.
+/**
+ * Fetch one chunk of price data using market_chart?days=X.
+ * `days` counts back from NOW, so we fetch and then filter to [fromStr, toStr].
+ * Max 365 days per request on the CoinGecko demo tier.
+ */
+async function fetchChunk(
+  coinId: string,
+  daysBack: number,
+  fromStr: string,
+  toStr: string
+): Promise<Map<string, number>> {
   const data = (await cgFetch(
     `/coins/${coinId}/market_chart?vs_currency=usd&days=${daysBack}`
   )) as { prices: [number, number][] };
 
-  const fromStr = toUTCDateString(from);
-  const toStr   = toUTCDateString(to);
-
-  // Group by UTC date, take the latest timestamp per day, filter to requested range
   const byDate = new Map<string, { ts: number; price: number }>();
   for (const [ts, price] of data.prices) {
     const dateStr = toUTCDateString(new Date(ts));
@@ -235,8 +234,60 @@ export async function fetchPriceRange(
       byDate.set(dateStr, { ts, price });
     }
   }
-
   return new Map([...byDate.entries()].map(([d, v]) => [d, v.price]));
+}
+
+/**
+ * Fetch daily close prices for a date range via CoinGecko market_chart.
+ *
+ * NOTE: /market_chart/range and interval=daily require paid plans.
+ * The demo tier supports /market_chart?days=X up to 365 days per request.
+ * For ranges > 365 days we split into multiple 365-day chunks, each anchored
+ * to a progressively older window by fetching from successive cut-off points.
+ *
+ * Returns a map of YYYY-MM-DD → price in USD.
+ */
+export async function fetchPriceRange(
+  asset: Asset,
+  from: Date,
+  to: Date
+): Promise<Map<string, number>> {
+  const coinId = COIN_IDS[asset];
+  const now = new Date();
+  const totalDays = Math.ceil((now.getTime() - from.getTime()) / 86_400_000) + 1;
+
+  const fromStr = toUTCDateString(from);
+  const toStr   = toUTCDateString(to);
+  const result  = new Map<string, number>();
+
+  if (totalDays <= CG_MAX_DAYS) {
+    // Single request covers the whole range
+    const chunk = await fetchChunk(coinId, totalDays, fromStr, toStr);
+    chunk.forEach((v, k) => result.set(k, v));
+  } else {
+    // Split into windows: most-recent window first (days=365), then step back
+    // Each window: fetch days=365 anchored from an artificial "now" is not
+    // supported by the API, so instead we fetch overlapping windows:
+    //   window 1: days=365  → covers [today-365d, today]
+    //   window 2: days=730  → covers [today-730d, today] (we filter to the gap)
+    // CoinGecko's market_chart always anchors to NOW, so larger `days` values
+    // naturally extend further back while still staying within one response.
+    const windows: number[] = [];
+    let d = CG_MAX_DAYS;
+    while (d < totalDays) {
+      windows.push(d);
+      d += CG_MAX_DAYS;
+    }
+    windows.push(totalDays); // final window covers the full range
+
+    for (let i = 0; i < windows.length; i++) {
+      if (i > 0) await sleep(1500); // rate-limit safety between requests
+      const chunk = await fetchChunk(coinId, windows[i], fromStr, toStr);
+      chunk.forEach((v, k) => result.set(k, v)); // later chunks overwrite with same/better data
+    }
+  }
+
+  return result;
 }
 
 // ─── Unified read layer ───────────────────────────────────────────────────────
